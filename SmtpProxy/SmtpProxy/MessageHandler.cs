@@ -5,71 +5,63 @@ namespace SmtpProxy
     public class MessageHandler
     {
         public const string HeloPrefix = "HELO";
+        public const string EhloPrefix = "EHLO";
         public const string MailFromPrefix = "MAIL FROM:";
         public const string MailToPrefix = "MAIL TO:";
         public const string DataMarker = "DATA";
         public const string QuitMarker = "QUIT";
 
-        private readonly Action<MessageHandlerResponse> _responseAction;
-
-        public MessageHandler(Action<MessageHandlerResponse> responseAction)
+        public MessageHandlerResponse Handle(MessageHandlerStatus currentStatus, string message)
         {
-            _responseAction = responseAction;
-            _responseAction(new MessageHandlerResponse(220, "SMTP Proxy here"));
-            Status = MessageHandlerStatus.Open;
-        }
-
-        public bool Send(string message)
-        {
-            if (Status == MessageHandlerStatus.Data)
+            if (currentStatus == MessageHandlerStatus.Open)
             {
-                if (message == ".")
+                if (message.StartsWith(HeloPrefix) || message.StartsWith(EhloPrefix))
                 {
-                    Respond(250, "OK, received", MessageHandlerStatus.EndData);
+                    string prefix = message.StartsWith(HeloPrefix) ? HeloPrefix : EhloPrefix;
+                    string name = message.Substring(prefix.Length).Trim();
+                    string greeting = string.Format("Hello {0}, how very nice to meet you", name);
+                    return new MessageHandlerResponse(250, greeting, MessageHandlerStatus.Greeting);
                 }
-                return false;
             }
-            if (Status == MessageHandlerStatus.EndData && message == "QUIT")
+
+            if (currentStatus == MessageHandlerStatus.Greeting)
             {
-                Respond(221, "Bye", MessageHandlerStatus.Closed);
-                return true;
+                if (message.StartsWith(MailFromPrefix))
+                {
+                    return new MessageHandlerResponse(250, "OK", MessageHandlerStatus.MailFrom);
+                }
             }
-            if (Status == MessageHandlerStatus.Open && message.StartsWith(HeloPrefix))
+
+            if (currentStatus == MessageHandlerStatus.MailFrom || currentStatus == MessageHandlerStatus.Recipient)
             {
-                string name = message.Substring(HeloPrefix.Length).Trim();
-                string greeting = string.Format("Hello {0}, how very nice to meet you", name);
-                Respond(250, greeting, MessageHandlerStatus.Greeting);
-                return false;
+                if (message.StartsWith(MailToPrefix))
+                {
+                    return new MessageHandlerResponse(250, "OK", MessageHandlerStatus.Recipient);
+                }
             }
-            if (Status == MessageHandlerStatus.Greeting && message.StartsWith(MailFromPrefix))
+
+            if (currentStatus == MessageHandlerStatus.Recipient)
             {
-                Respond(250, "OK", MessageHandlerStatus.MailFrom);
-                return false;
+                if (message.StartsWith(DataMarker))
+                {
+                    return new MessageHandlerResponse(354, "End data with /r/n./r/n", MessageHandlerStatus.Data);
+                }
             }
-            if ((Status == MessageHandlerStatus.MailFrom || Status == MessageHandlerStatus.Recipient)
-                && message.StartsWith(MailToPrefix))
+
+            if (currentStatus == MessageHandlerStatus.Data)
             {
-                Respond(250, "OK", MessageHandlerStatus.Recipient);
-                return false;
+                return message == "." ? new MessageHandlerResponse(250, "OK, received", MessageHandlerStatus.EndData) : null;
             }
-            if (Status == MessageHandlerStatus.Recipient && message.StartsWith(DataMarker))
+
+            if (currentStatus == MessageHandlerStatus.EndData)
             {
-                Respond(354, "End data with /r/n./r/n", MessageHandlerStatus.Data);
-                return false;
+                if (message == QuitMarker)
+                {
+                    return new MessageHandlerResponse(221, "Bye", MessageHandlerStatus.Closed);
+                }
             }
-            Status = MessageHandlerStatus.Closed;
+
             throw new InvalidOperationException("Unrecognised message");
         }
-
-        private void Respond(int code, string message, MessageHandlerStatus? newStatus = null)
-        {
-            _responseAction(new MessageHandlerResponse(code, message));
-            if (newStatus.HasValue)
-            {
-                Status = newStatus.Value;
-            }
-        }
-
-        public MessageHandlerStatus Status { get; private set; }
     }
 }
